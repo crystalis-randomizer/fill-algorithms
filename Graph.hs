@@ -4,13 +4,15 @@ module Graph where
 
 import Debug.Trace (trace)
 
+import Control.Arrow (second)
 import Data.Char (chr, ord)
 import Data.Foldable (foldMap)
-import qualified Data.Map as M
-import Data.Map (Map)
+import qualified Data.Map.Strict as M
+import Data.Map.Strict (Map)
 import Data.Monoid (First(..))
 import qualified Data.Set as S
 import Data.Set (Set)
+import Memo (memoizefix3, memoizefix2, memoize2)
 import Prob
 
 tr :: Show a => String -> a -> a
@@ -18,6 +20,11 @@ tr !msg !v = trace ((++ ": " ++ show v) $! msg) $! v
 
 -- DNF (i.e. ["A", "B"] means A or B, ["AB"] means A and B)
 newtype Graph = Graph {unGraph :: [[String]]} deriving (Show)
+
+-- data CompiledGraph = CG (Array Int (UArray Int BitSet)) (UArray Int BitSet)
+-- traverse can use mutable arrays: unsafePerformIO, IOUArray
+-- fill will still want immutable, but can still use arrays to great benefit
+--  - Filling can be changed to UArray Int as well...
 
 locations :: Graph -> [Int]
 locations (Graph g) = [0 .. length g - 1]
@@ -42,8 +49,8 @@ wordsBy p c =  case dropWhile p c of
 newtype Filling = Filling {unFill :: Map Int Char} deriving (Eq, Ord)
 
 instance Show Filling where
-  show (Filling m) | M.null m = "Filling []"
-                   | otherwise = "Filling " ++ map ch [0..end]
+  show (Filling m) | M.null m = "[]"
+                   | otherwise = map ch [0..end]
     where end = maximum $ M.keys m
           ch i = maybe ' ' id $ M.lookup i m
 
@@ -53,6 +60,7 @@ emptyFill = Filling $ M.empty
 initialFill :: String -> Filling
 initialFill elems = Filling $ foldMap check $ zip [0..] elems
   where check (i, ' ') = M.empty
+        check (i, 'x') = M.empty
         check (i, c) = M.singleton i c
 
 addFill :: Int -> Char -> Filling -> Filling
@@ -97,24 +105,54 @@ valid g f = S.size (trav g f S.empty) == length (unGraph g)
 randomFill :: Fractional n => Graph -> Prob n Filling
 randomFill g = uniform $ filter (valid g) $ fillings $ length $ unGraph g
 
-assumedFillInternal :: Fractional n => Graph -> Prob n Char -> Prob n Filling
-assumedFillInternal g dist = fill emptyFill dist $ S.fromList $ probToList dist
-  where fill f dist has
+randomFill2 :: Fractional n => Graph -> Prob n Filling
+randomFill2 g = consolidate $ Prob $ map (second $ progressionOnly g) $
+                unProb $ randomFill g
+
+progressionOnly :: Graph -> Filling -> Filling
+progressionOnly g (Filling f) = Filling $ M.filter (flip S.member pi) f
+  where pi = progressionItems g
+
+
+assumedFill' :: (Ord n, Fractional n) => Graph -> Prob n Char -> Prob n Filling
+assumedFill' g dist = fill' emptyFill dist $ S.fromList $ probToList dist
+  where fill' = memoizefix3 fill
+        -- fill :: Fractional n => Filling -> Prob n Char -> Set Char -> Prob n Filling
+        fill recurse f dist has
           | S.null has = uniform [f]
           | otherwise = do i <- dist
                            let remaining = S.delete i has
-                               reachable = S.toList $ trav g f remaining
+                               reachable = S.toList $ trav' f remaining
                                fillable = filter unfilled reachable
                                  where unfilled x = not $ M.member x $ unFill f
                            l <- uniform fillable
                            let d2 = normalize $ filterProb (\x -> x /= i) dist
-                           fill (addFill l i f) d2 remaining
+                           recurse (addFill l i f) d2 remaining
+        trav' = memoize2 $ trav g
 
-assumedFill :: Fractional n => Graph -> Prob n Filling
-assumedFill g = assumedFillInternal g $ uniform $ items g
+assumedFill :: (Ord n, Fractional n) => Graph -> Prob n Filling
+assumedFill g = assumedFill' g $ uniform $ items g
 
-assumedFill2 :: Fractional n => Graph -> Prob n Filling
-assumedFill2 g = assumedFillInternal g $ uniform $ S.toList $ progressionItems g
+assumedFill2 :: (Ord n, Fractional n) => Graph -> Prob n Filling
+assumedFill2 g = assumedFill' g $ uniform $ S.toList $ progressionItems g
+
+forwardFill' :: Fractional n => Graph -> Prob n Char -> Prob n Filling
+forwardFill' g dist = fill dist emptyFill
+  where fill :: Fractional n => Prob n Char -> Filling -> Prob n Filling
+        fill dist f@(Filling m)
+          | null (unProb dist) = uniform [f]
+          | otherwise = do l <- uniform $ filter new $ S.toList $ trav g f S.empty
+                           i <- dist
+                           let d2 = normalize $ filterProb (\x -> x /= i) dist
+                           fill d2 (addFill l i f)
+                             where new i = not $ M.member i m
+        size = length $ unGraph g
+
+forwardFill :: Fractional n => Graph -> Prob n Filling
+forwardFill g = forwardFill' g $ uniform $ items g
+
+forwardFill2 :: Fractional n => Graph -> Prob n Filling
+forwardFill2 g = forwardFill' g $ uniform $ S.toList $ progressionItems g
 
 position :: Char -> Filling -> Maybe Int
 position c (Filling f) = getFirst $ M.foldMapWithKey check f
@@ -124,3 +162,20 @@ position c (Filling f) = getFirst $ M.foldMapWithKey check f
 
 itemAt :: Int -> Filling -> Maybe Char
 itemAt i (Filling f) = M.lookup i f
+
+-- analysis:
+analyzeItems :: Prob Double Filling -> String
+analyzeItems f = stack $ map mktable items
+  where items = S.toList $ foldMap id $
+                map (M.foldMapWithKey (\k a -> S.singleton a) . unFill . snd) $
+                unProb f
+        mktable c = rhead (c:' ':simp (show $ entropy pos)) $ table $ pos
+          where pos = maybeProb $ normalize $ consolidate $ fmap (position c) $
+                      consolidate f
+        simp [] = []
+        simp ('.':x:y:xs) = '.':x:y:[]
+        simp ('.':x:[]) = '.':x:[]
+        simp "." = "."
+        simp (x:xs) = x:simp xs
+
+-- putStr $ stack $ map (\c -> rhead (c:"") $ table $ maybeProb $ normalize $ consolidate $ fmap (position c) $ consolidate $ assumedFill' (graph ["", "A|B", "A|C", "A", "A"]) $ Prob [(0.025, 'A'), (0.025, 'B'), (0.025, 'C')]) "ABC"
