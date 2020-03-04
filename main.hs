@@ -1,11 +1,17 @@
 import System.Environment
 import Graph
+import Prob
 
 main = do
   args <- getArgs
-  putStrLn "Random Fill"
-  putStrLn $ analyzeItems $ randomFill2 $ graph args
-  putStrLn "Assumed Fill"
-  putStrLn $ analyzeItems $ assumedFill2 $ graph args
-  putStrLn "Forward Fill"
-  putStrLn $ analyzeItems $ forwardFill2 $ graph args
+  let g = graph args
+      r = randomFill2 g
+      a = assumedFill2 g
+      f = forwardFill2 g
+  putStr $ unlines ["Random Fill: " ++ show (entropy r)
+                   ,analyzeItems r
+                   ,"Assumed Fill: " ++ show (entropy a)
+                   ,analyzeItems a
+                   ,"Forward Fill: " ++ show (entropy f)
+                   ,analyzeItems f
+                   ]
