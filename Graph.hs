@@ -115,7 +115,7 @@ progressionOnly g (Filling f) = Filling $ M.filter (flip S.member pi) f
 
 
 assumedFill' :: (Ord n, Fractional n) => Graph -> Prob n Char -> Prob n Filling
-assumedFill' g dist = fill' emptyFill dist $ S.fromList $ probToList dist
+assumedFill' g dist = consolidate $ fill' emptyFill dist $ S.fromList $ probToList dist
   where fill' = memoizefix3 fill
         -- fill :: Fractional n => Filling -> Prob n Char -> Set Char -> Prob n Filling
         fill recurse f dist has
@@ -137,7 +137,7 @@ assumedFill2 :: (Ord n, Fractional n) => Graph -> Prob n Filling
 assumedFill2 g = assumedFill' g $ uniform $ S.toList $ progressionItems g
 
 forwardFill' :: Fractional n => Graph -> Prob n Char -> Prob n Filling
-forwardFill' g dist = fill dist emptyFill
+forwardFill' g dist = consolidate $ fill dist emptyFill
   where fill :: Fractional n => Prob n Char -> Filling -> Prob n Filling
         fill dist f@(Filling m)
           | null (unProb dist) = uniform [f]
